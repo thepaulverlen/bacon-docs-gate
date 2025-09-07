@@ -2,209 +2,104 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Private Documents — BACON</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Private Documents</title>
   <style>
-    :root { --bg:#fff; --fg:#111; --muted:#666; --brand:#2563eb; --brand-2:#1e40af; }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{
-      margin:0;
-      font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,Ubuntu,Apple Color Emoji,Segoe UI Emoji;
-      color:var(--fg); background:var(--bg);
-      line-height:1.5;
-    }
-    header{
-      padding:24px 16px 8px;
-      max-width:1100px; margin:0 auto;
-    }
-    h1{margin:0 0 8px;font-weight:700;letter-spacing:.2px}
-    p.lead{margin:0;color:var(--muted)}
-    #bar{
-      display:flex; gap:12px; align-items:center; flex-wrap:wrap;
-      padding:16px; max-width:1100px; margin:8px auto 0;
-    }
-    .btn{
-      appearance:none; border:0; cursor:pointer;
-      background:var(--brand); color:#fff; font-weight:600;
-      padding:10px 14px; border-radius:10px; transition:.15s ease;
-    }
-    .btn:hover{ background:var(--brand-2) }
-    .btn[disabled]{opacity:.6; cursor:not-allowed}
-
-    #msg, #err { font-size:14px; color:var(--muted) }
-    #err{ color:#b91c1c; white-space:pre-wrap }
-
-    #wrap{ max-width:1100px; margin:8px auto 24px; padding:0 16px; }
-    #viewer{ display:grid; gap:16px; grid-template-columns:1fr; margin-top:8px; }
-    canvas{
-      width:100% !important; height:auto !important;
-      box-shadow:0 8px 24px rgba(0,0,0,.08); border-radius:8px; background:#f6f7f9;
-    }
-
-    body.nodrag *{ -webkit-user-drag: none; user-select:none }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:32px}
+    h1{font-size:34px;margin:0 0 16px}
+    p{margin:0 0 16px}
+    #msg{margin-left:12px;color:#d22}
+    .btn{display:inline-block;padding:10px 14px;border-radius:8px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
   </style>
 </head>
-<body class="nodrag">
-  <header>
-    <h1>Private Documents</h1>
-    <p class="lead">Access is restricted to <strong>BACON NFT</strong> holders. Signing is free (no gas).</p>
-  </header>
+<body>
+  <h1>Private Documents</h1>
+  <p>Access is restricted to <b>BACON NFT</b> holders. Signing is free (no gas).</p>
 
-  <section id="bar">
-    <button id="connectBtn" class="btn">Connect Wallet</button>
-    <span id="msg">Waiting for wallet…</span>
-    <span id="err" role="alert" aria-live="polite"></span>
-  </section>
+  <button id="connect" class="btn">Connect Wallet</button>
+  <span id="msg"></span>
 
-  <main id="wrap" hidden>
-    <div id="viewer" aria-live="polite"></div>
-  </main>
+  <script type="module">
+    const BTN  = document.getElementById('connect');
+    const MSG  = document.getElementById('msg');
 
-  <script>
-    const els = {
-      btn: document.getElementById('connectBtn'),
-      msg: document.getElementById('msg'),
-      err: document.getElementById('err'),
-      wrap: document.getElementById('wrap'),
-      viewer: document.getElementById('viewer'),
-    };
+    // Адрес serverless-функции — фиксированный путь на Netlify
+    const FN_URL = '/.netlify/functions/view';
 
-    const hasEth = typeof window.ethereum !== 'undefined';
-    const PDF_JS_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js";
-    const PDF_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.js";
-
-    function setMsg(text){ els.msg.textContent = text ?? ''; }
-    function setErr(text){ els.err.textContent = text ?? ''; }
-    function enableBtn(on){ els.btn.disabled = !on; }
-
-    // Ленивая загрузка pdf.js только когда он действительно нужен
-    function ensurePdfJs(){
-      return new Promise((resolve, reject) => {
-        if (window.pdfjsLib){
-          try{
-            pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
-          }catch(e){}
-          return resolve(pdfjsLib);
-        }
-        const s = document.createElement('script');
-        s.src = PDF_JS_URL;
-        s.async = true;
-        s.onload = () => {
-          try{
-            pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
-          }catch(e){}
-          resolve(pdfjsLib);
-        };
-        s.onerror = () => reject(new Error('Failed to load pdf.js'));
-        document.head.appendChild(s);
-      });
+    function show(text, isError=true){
+      MSG.textContent = text || '';
+      MSG.style.color = isError ? '#d22' : '#0a0';
     }
 
-    (function init(){
-      if (!hasEth){
-        setMsg('No wallet detected. Install MetaMask or another EVM wallet.');
-        els.btn.textContent = 'Get MetaMask';
-        enableBtn(true);
-        els.btn.addEventListener('click', () => {
-          window.open('https://metamask.io/download/', '_blank', 'noopener');
-        }, { once:true });
-        return;
-      }
-      setMsg('Wallet ready.');
-      enableBtn(true);
-      els.btn.addEventListener('click', onConnect);
-    })();
+    function wait(on=true){
+      BTN.disabled = on;
+      BTN.textContent = on ? 'Waiting for wallet…' : 'Connect Wallet';
+    }
 
-    async function onConnect(){
-      setErr('');
-      enableBtn(false);
-      setMsg('Requesting accounts…');
+    async function connect() {
+      try {
+        if (!window.ethereum) {
+          show('No wallet found. Please install MetaMask or a compatible wallet.');
+          return;
+        }
 
-      try{
-        const [address] = await ethereum.request({ method:'eth_requestAccounts' });
-        if (!address) throw new Error('No account returned');
+        wait(true); show('');
 
-        const nonce = (Math.random().toString(36).slice(2) + Date.now()).slice(0,16);
-        const message =
-          `BACON Docs Access\nAddress: ${address}\nNonce: ${nonce}\nTime: ${new Date().toISOString()}`;
-        setMsg('Please sign the message (gas-free)…');
+        // 1) Запрашиваем аккаунт
+        const [address] = await window.ethereum.request({ method: 'eth_requestAccounts' });
 
-        const signature = await ethereum.request({
-          method:'personal_sign',
-          params:[ message, address ]
+        // (опционально) Проверяем сеть — mainnet (0x1)
+        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        if (chainId !== '0x1') {
+          show('Wrong network. Please switch your wallet to Ethereum Mainnet.');
+          wait(false);
+          return;
+        }
+
+        // (опционально) Подпись без газа — просто антибот
+        const message = `Sign to verify holder access for BACON docs. Nonce: ${Date.now()}`;
+        await window.ethereum.request({
+          method: 'personal_sign',
+          params: [message, address]
         });
 
-        setMsg('Verifying access…');
-
-        const res = await fetch('/api/view', {
-          method:'GET',
-          headers:{
-            'X-Addr': address,
-            'X-Sig': signature,
-            'X-Msg': message,
-          },
-          cache:'no-store'
+        // 2) Обращаемся к функции-гейту
+        //    ВАЖНО: URL должен быть строкой — здесь он жёстко задан в FN_URL.
+        const res = await fetch(FN_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ address })
         });
 
-        if (!res.ok){
-          const t = await res.text().catch(()=> String(res.status));
-          throw new Error(`Access denied: ${t}`);
+        if (!res.ok) {
+          // Попробуем прочитать текст ошибки
+          let err = '';
+          try { const j = await res.json(); err = j?.error || ''; } catch {}
+          show(err || `Access denied (${res.status})`);
+          wait(false);
+          return;
         }
 
-        const blob = await res.blob();
-        if (!/pdf/i.test(blob.type)){
-          throw new Error('Server did not return a PDF.');
+        const data = await res.json();
+        if (!data?.url) {
+          show('Unexpected server response: no URL.');
+          wait(false);
+          return;
         }
 
-        setMsg('Loading viewer…');
-        await ensurePdfJs();
+        // 3) Пускаем внутрь
+        show('Access granted. Opening…', false);
+        window.location.href = data.url;
 
-        setMsg('Rendering document…');
-        await renderPdfFromBlob(blob);
-
-        els.wrap.hidden = false;
-        setMsg('');
-        els.btn.remove();
-      }
-      catch(err){
-        console.error(err);
-        setErr(err?.message ?? String(err));
-        setMsg('You may try again.');
-        enableBtn(true);
+      } catch (e) {
+        console.error(e);
+        show(e?.message || 'Something went wrong.');
+        wait(false);
       }
     }
 
-    async function renderPdfFromBlob(blob){
-      els.viewer.innerHTML = '';
-      const url = URL.createObjectURL(blob);
-      const pdf = await pdfjsLib.getDocument({ url }).promise;
-
-      for (let p = 1; p <= pdf.numPages; p++){
-        const page = await pdf.getPage(p);
-        const viewport = page.getViewport({ scale: 1.5 });
-
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', { alpha:false });
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-
-        const renderTask = page.render({ canvasContext: ctx, viewport });
-        await renderTask.promise;
-
-        els.viewer.appendChild(canvas);
-      }
-      URL.revokeObjectURL(url);
-    }
-
-    // Лёгкая защита от случайной печати/копии
-    window.addEventListener('contextmenu', e => e.preventDefault());
-    window.addEventListener('keydown', (e) => {
-      const k = e.key.toLowerCase();
-      if ((e.ctrlKey || e.metaKey) && ['p','s','c'].includes(k)) {
-        e.preventDefault();
-      }
-    });
+    BTN.addEventListener('click', connect);
   </script>
 </body>
 </html>
