@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>BACON — Private Docs</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    #wrap { position: relative; max-width: 1100px; }
+    #wm { position:absolute; top:20px; left:20px; opacity:.35; font:14px monospace; pointer-events:none; }
+    .btn { padding:10px 14px; border:1px solid #ddd; border-radius:10px; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    canvas { display:block; margin: 16px 0; box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+    @media print { body { display:none; } }
+  </style>
+</head>
+<body>
+  <h1>Private Documents</h1>
+  <p>Доступ только для держателей NFT <code>BACON</code>. Подпись бесплатна, газа нет.</p>
+  <button class="btn" id="connect">Connect Wallet</button>
+  <div id="wrap">
+    <div id="wm"></div>
+    <div id="pdfHost"></div>
+  </div>
+
+  <script src="https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.worker.min.js';
+
+    async function connectAndLoad() {
+      try {
+        if (!window.ethereum) { alert('Install MetaMask'); return; }
+        const [addr] = await window.ethereum.request({ method:'eth_requestAccounts' });
+
+        const message = `Access BACON docs\nAddr:${addr}\nTime:${Date.now()}`;
+        const signature = await window.ethereum.request({
+          method:'personal_sign', params:[message, addr]
+        });
+
+        const res = await fetch('/api/view', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ message, signature })
+        });
+        if (!res.ok) { alert('Access denied'); return; }
+
+        const buf = await res.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        const host = document.getElementById('pdfHost');
+        host.innerHTML = '';
+
+        for (let p = 1; p <= pdf.numPages; p++) {
+          const page = await pdf.getPage(p);
+          const scale = 1.2;
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          host.appendChild(canvas);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+        }
+
+        const wm = document.getElementById('wm');
+        wm.textContent = `${addr} • ${new Date().toISOString()}`;
+
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+          if ((e.ctrlKey || e.metaKey) && ['s','p','S','P'].includes(e.key)) e.preventDefault();
+        });
+      } catch (e) { alert('Error'); }
+    }
+    document.getElementById('connect').onclick = connectAndLoad;
+  </script>
+</body>
+</html>
