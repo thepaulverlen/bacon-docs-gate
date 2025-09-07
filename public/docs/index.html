@@ -35,19 +35,13 @@
     #msg, #err { font-size:14px; color:var(--muted) }
     #err{ color:#b91c1c; white-space:pre-wrap }
 
-    /* viewer */
     #wrap{ max-width:1100px; margin:8px auto 24px; padding:0 16px; }
-    #viewer{
-      display:grid; gap:16px; grid-template-columns:1fr;
-      margin-top:8px;
-    }
+    #viewer{ display:grid; gap:16px; grid-template-columns:1fr; margin-top:8px; }
     canvas{
       width:100% !important; height:auto !important;
-      box-shadow:0 8px 24px rgba(0,0,0,.08); border-radius:8px;
-      background:#f6f7f9;
+      box-shadow:0 8px 24px rgba(0,0,0,.08); border-radius:8px; background:#f6f7f9;
     }
 
-    /* небольшая защита от “простой” копии/печати */
     body.nodrag *{ -webkit-user-drag: none; user-select:none }
   </style>
 </head>
@@ -67,13 +61,7 @@
     <div id="viewer" aria-live="polite"></div>
   </main>
 
-  <!-- pdf.js (core) -->
-  <script src="https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
   <script>
-    // Настройка pdf.js worker
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.worker.min.js";
-
     const els = {
       btn: document.getElementById('connectBtn'),
       msg: document.getElementById('msg'),
@@ -83,12 +71,36 @@
     };
 
     const hasEth = typeof window.ethereum !== 'undefined';
+    const PDF_JS_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js";
+    const PDF_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.js";
 
     function setMsg(text){ els.msg.textContent = text ?? ''; }
     function setErr(text){ els.err.textContent = text ?? ''; }
     function enableBtn(on){ els.btn.disabled = !on; }
 
-    // Стартовое состояние
+    // Ленивая загрузка pdf.js только когда он действительно нужен
+    function ensurePdfJs(){
+      return new Promise((resolve, reject) => {
+        if (window.pdfjsLib){
+          try{
+            pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+          }catch(e){}
+          return resolve(pdfjsLib);
+        }
+        const s = document.createElement('script');
+        s.src = PDF_JS_URL;
+        s.async = true;
+        s.onload = () => {
+          try{
+            pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+          }catch(e){}
+          resolve(pdfjsLib);
+        };
+        s.onerror = () => reject(new Error('Failed to load pdf.js'));
+        document.head.appendChild(s);
+      });
+    }
+
     (function init(){
       if (!hasEth){
         setMsg('No wallet detected. Install MetaMask or another EVM wallet.');
@@ -113,7 +125,6 @@
         const [address] = await ethereum.request({ method:'eth_requestAccounts' });
         if (!address) throw new Error('No account returned');
 
-        // Формируем сообщение и подпись (без газа)
         const nonce = (Math.random().toString(36).slice(2) + Date.now()).slice(0,16);
         const message =
           `BACON Docs Access\nAddress: ${address}\nNonce: ${nonce}\nTime: ${new Date().toISOString()}`;
@@ -126,7 +137,6 @@
 
         setMsg('Verifying access…');
 
-        // Запрашиваем защищённый PDF у серверной функции (GET + заголовки)
         const res = await fetch('/api/view', {
           method:'GET',
           headers:{
@@ -134,7 +144,6 @@
             'X-Sig': signature,
             'X-Msg': message,
           },
-          // на всякий случай не кэшируем
           cache:'no-store'
         });
 
@@ -148,13 +157,15 @@
           throw new Error('Server did not return a PDF.');
         }
 
+        setMsg('Loading viewer…');
+        await ensurePdfJs();
+
         setMsg('Rendering document…');
         await renderPdfFromBlob(blob);
 
-        // Показываем viewer
         els.wrap.hidden = false;
-        setMsg(''); // чистим надпись
-        els.btn.remove(); // кнопку можно убрать
+        setMsg('');
+        els.btn.remove();
       }
       catch(err){
         console.error(err);
@@ -166,13 +177,9 @@
 
     async function renderPdfFromBlob(blob){
       els.viewer.innerHTML = '';
-      // Создаём blob URL
       const url = URL.createObjectURL(blob);
-
-      // Загружаем документ
       const pdf = await pdfjsLib.getDocument({ url }).promise;
 
-      // Отрисуем все страницы (можно ограничить, если нужно)
       for (let p = 1; p <= pdf.numPages; p++){
         const page = await pdf.getPage(p);
         const viewport = page.getViewport({ scale: 1.5 });
@@ -187,15 +194,12 @@
 
         els.viewer.appendChild(canvas);
       }
-
-      // Чистим URL, когда больше не нужен
       URL.revokeObjectURL(url);
     }
 
-    // Доп. меры от “случайного” копирования (не защита от умышленного)
+    // Лёгкая защита от случайной печати/копии
     window.addEventListener('contextmenu', e => e.preventDefault());
     window.addEventListener('keydown', (e) => {
-      // блокируем Print / Save / Copy (частично)
       const k = e.key.toLowerCase();
       if ((e.ctrlKey || e.metaKey) && ['p','s','c'].includes(k)) {
         e.preventDefault();
