@@ -1,64 +1,76 @@
-// netlify/functions/view.js — Functions v2 (ESM). Returns the PDF (binary) on success.
-export default async function handler(req) {
-  const JSON = { "content-type": "application/json; charset=utf-8" };
+// netlify/functions/view.js
+const ABI_BALANCE_OF = '0x70a08231'; // keccak256("balanceOf(address)") first 4 bytes
 
+export default async function handler(req) {
   try {
-    if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method Not Allowed" }), { status: 405, headers: JSON });
+    if (req.method !== 'POST') {
+      return json({ error: 'Method Not Allowed' }, 405);
+    }
+
+    const { address } = await req.json().catch(() => ({}));
+    if (!address || typeof address !== 'string') {
+      return json({ error: 'Bad request: address is required' }, 400);
     }
 
     const RPC_URL      = process.env.RPC_URL;
-    const NFT_CONTRACT = process.env.NFT_CONTRACT;
+    const NFT_CONTRACT = (process.env.NFT_CONTRACT || '').toLowerCase();
     const DOCS_CID     = process.env.DOCS_CID;
-    const GATEWAY      = (process.env.GATEWAY_URL || "https://w3s.link/ipfs").replace(/\/+$/,"");
+    const GATEWAY      = process.env.GATEWAY_URL || 'https://cloudflare-ipfs.com/ipfs';
 
     if (!RPC_URL || !NFT_CONTRACT || !DOCS_CID) {
-      return new Response(JSON.stringify({ error: "Missing env vars" }), { status: 500, headers: JSON });
+      return json({ error: 'Server is not configured (missing env vars).' }, 500);
     }
 
-    let body;
-    try { body = await req.json(); } catch {}
-    const address = (body?.address || "").toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(address)) {
-      return new Response(JSON.stringify({ error: "Bad address" }), { status: 400, headers: JSON });
-    }
+    // --- Проверка владения ERC-721 через balanceOf(address) ---
+    const addrNoPrefix = address.replace(/^0x/i, '').padStart(64, '0');
+    const data = ABI_BALANCE_OF + addrNoPrefix;
 
-    // ERC-721 balanceOf(address): 0x70a08231 + padded address
-    const data = "0x70a08231" + address.slice(2).padStart(64, "0");
-    const payload = { jsonrpc:"2.0", id:1, method:"eth_call", params:[{ to: NFT_CONTRACT, data }, "latest"] };
+    const rpcBody = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_call',
+      params: [
+        { to: NFT_CONTRACT, data },
+        'latest'
+      ]
+    };
 
-    const rpc = await fetch(RPC_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
+    const r = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(rpcBody)
     });
-    if (!rpc.ok) {
-      return new Response(JSON.stringify({ error: "RPC failed" }), { status: 502, headers: JSON });
-    }
-    const j = await rpc.json();
-    const bal = BigInt(j?.result || "0x0");
-    if (bal <= 0n) {
-      return new Response(JSON.stringify({ error: "No required NFT" }), { status: 403, headers: JSON });
+
+    if (!r.ok) {
+      const t = await r.text();
+      return json({ error: `RPC error: ${t.slice(0, 160)}` }, 502);
     }
 
-    // Fetch PDF from IPFS and return as binary
-    const ipfs = await fetch(`${GATEWAY}/${DOCS_CID}`);
-    if (!ipfs.ok) {
-      return new Response(JSON.stringify({ error: "IPFS fetch error" }), { status: 502, headers: JSON });
+    const payload = await r.json();
+    const hex = payload?.result;
+    if (!hex || !hex.startsWith('0x')) {
+      return json({ error: 'Invalid RPC response' }, 502);
     }
-    const ab = await ipfs.arrayBuffer();
 
-    return new Response(ab, {
-      status: 200,
-      headers: {
-        "content-type": "application/pdf",
-        "content-disposition": 'inline; filename="docs.pdf"',
-        "cache-control": "no-store, no-cache, must-revalidate",
-        "x-content-type-options": "nosniff",
-        "referrer-policy": "no-referrer"
-      }
-    });
+    // Преобразуем hex в BigInt и проверим, что баланс > 0
+    const balance = BigInt(hex);
+    if (balance <= 0n) {
+      return json({ error: 'Access denied: no BACON NFT found on this address.' }, 403);
+    }
+
+    // OK — формируем ссылку на документы
+    const url = `${GATEWAY}/${DOCS_CID}`;
+    return json({ url }, 200);
+
   } catch (e) {
-    return new Response(JSON.stringify({ error: e?.message || "Internal error" }), { status: 500, headers: JSON });
+    return json({ error: e?.message || 'Unexpected error' }, 500);
   }
+}
+
+// Утилита для корректного JSON-ответа в Functions v2
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
+  });
 }
