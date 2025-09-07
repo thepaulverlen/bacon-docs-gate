@@ -1,98 +1,127 @@
 // netlify/functions/view.js
-// Node 18+ (у Netlify fetch есть из коробки)
+// Универсальный обработчик: принимает POST/GET/OPTIONS, отвечает JSON.
+// Проверяет наличие токена BACON (ERC-721) на адресе, и если ок — отдаёт ссылку на PDF в IPFS.
 
-exports.handler = async (event) => {
+export default async (event) => {
+  // Общие заголовки (и на всякий случай CORS)
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+
   try {
-    // Разрешим и GET, и POST
-    let address = '';
-    if (event.httpMethod === 'GET') {
+    // 1) Preflight
+    if (event.httpMethod === 'OPTIONS') {
+      return { statusCode: 204, headers, body: '' };
+    }
+
+    // 2) Считываем env
+    const RPC_URL     = process.env.RPC_URL;
+    const DOCS_CID    = process.env.DOCS_CID;
+    const NFT_CONTRACT= process.env.NFT_CONTRACT;
+    const GATEWAY_URL = process.env.GATEWAY_URL || 'https://cloudflare-ipfs.com/ipfs';
+
+    if (!RPC_URL || !DOCS_CID || !NFT_CONTRACT) {
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          ok: false,
+          error: 'Server misconfigured: missing RPC_URL, DOCS_CID or NFT_CONTRACT',
+        }),
+      };
+    }
+
+    // 3) Берём адрес из POST JSON либо из query (на случай GET)
+    let address;
+    if (event.httpMethod === 'POST') {
+      try {
+        const body = JSON.parse(event.body || '{}');
+        address = (body.address || '').toLowerCase();
+      } catch {
+        // пусто — address останется undefined
+      }
+    } else if (event.httpMethod === 'GET') {
       const params = new URLSearchParams(event.rawQuery || '');
-      address = (params.get('address') || '').trim().toLowerCase();
-    } else if (event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
-      address = (body.address || '').trim().toLowerCase();
+      address = (params.get('address') || '').toLowerCase();
     } else {
-      return json(405, 'Method Not Allowed');
+      // Любой другой метод — 405, но без крашей
+      return {
+        statusCode: 405,
+        headers,
+        body: JSON.stringify({ ok: false, error: 'Method Not Allowed' }),
+      };
     }
 
-    // Базовая валидация адреса
-    if (!/^0x[a-f0-9]{40}$/.test(address)) {
-      return json(400, 'Bad Request: invalid address');
+    if (!address || !/^0x[a-f0-9]{40}$/.test(address)) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ ok: false, error: 'Invalid or missing address' }),
+      };
     }
 
-    // Переменные окружения
-    const RPC_URL = process.env.RPC_URL;                  // ваш Alchemy/Infura RPC
-    const NFT_CONTRACT = (process.env.NFT_CONTRACT || '').toLowerCase(); // адрес BACON NFT
-    const DOCS_CID = process.env.DOCS_CID;               // CID PDF
-    const GATEWAY_URL = (process.env.GATEWAY_URL || 'https://gateway.pinata.cloud/ipfs').replace(/\/+$/,'');
+    // 4) Проверяем баланс ERC-721: balanceOf(address)
+    //    сигнатура 0x70a08231 + адрес без 0x (паддинг до 32 байт)
+    const data = '0x70a08231' + address.slice(2).padStart(64, '0');
 
-    if (!RPC_URL || !NFT_CONTRACT || !DOCS_CID) {
-      return json(500, 'Server misconfigured: RPC_URL / NFT_CONTRACT / DOCS_CID required');
-    }
-
-    // ===== Проверка наличия NFT через balanceOf(address) =====
-    // 0x70a08231 = keccak("balanceOf(address)") первые 4 байта
-    const methodId = '0x70a08231';
-    const addrNo0x = address.slice(2).padStart(64, '0');
-    const data = methodId + addrNo0x;
-
-    const rpcRes = await fetch(RPC_URL, {
-      method: 'POST',
-      headers: {'content-type':'application/json'},
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_call',
-        params: [{ to: NFT_CONTRACT, data }, 'latest']
-      })
-    });
-
-    if (!rpcRes.ok) {
-      const t = await rpcRes.text().catch(()=> '');
-      return json(502, 'RPC error: ' + t);
-    }
-
-    const rpcJson = await rpcRes.json();
-    const hex = (rpcJson && rpcJson.result) || '0x0';
-    const balance = BigInt(hex);
-
-    if (balance <= 0n) {
-      return json(403, 'Forbidden: no required NFT');
-    }
-
-    // ===== Доступ есть — отдаем PDF с IPFS =====
-    const pdfUrl = `${GATEWAY_URL}/${DOCS_CID}`;
-    const ipfsRes = await fetch(pdfUrl);
-
-    if (!ipfsRes.ok) {
-      const t = await ipfsRes.text().catch(()=> '');
-      return json(502, 'IPFS fetch error: ' + t);
-    }
-
-    const ab = await ipfsRes.arrayBuffer();
-    const base64 = Buffer.from(ab).toString('base64');
-    // Попробуем взять content-type от шлюза, fallback — pdf
-    const ctype = ipfsRes.headers.get('content-type') || 'application/pdf';
-
-    return {
-      statusCode: 200,
-      headers: {
-        'content-type': ctype,
-        'cache-control': 'no-store',
-      },
-      isBase64Encoded: true,
-      body: base64
+    const payload = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_call',
+      params: [
+        { to: NFT_CONTRACT, data },
+        'latest',
+      ],
     };
 
-  } catch (err) {
-    return json(500, 'Unexpected error: ' + (err && err.message || String(err)));
+    const r = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!r.ok) {
+      return {
+        statusCode: 502,
+        headers,
+        body: JSON.stringify({ ok: false, error: 'RPC request failed' }),
+      };
+    }
+
+    const j = await r.json();
+    const hex = j?.result;
+    if (!hex || !hex.startsWith('0x')) {
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ ok: false, error: 'No result from contract' }),
+      };
+    }
+
+    const balance = BigInt(hex);
+    if (balance === 0n) {
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ ok: false, error: 'No required NFT on this address' }),
+      };
+    }
+
+    // 5) Ок — отдаём ссылку на документ
+    const url = `${GATEWAY_URL.replace(/\/+$/,'')}/${DOCS_CID}`;
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ ok: true, url }),
+    };
+  } catch (e) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) }),
+    };
   }
 };
-
-function json(code, message) {
-  return {
-    statusCode: code,
-    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-    body: message
-  };
-}
