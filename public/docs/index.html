@@ -2,104 +2,226 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Private Documents</title>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  />
+  <title>BACON — Private Documents</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:32px}
-    h1{font-size:34px;margin:0 0 16px}
-    p{margin:0 0 16px}
-    #msg{margin-left:12px;color:#d22}
-    .btn{display:inline-block;padding:10px 14px;border-radius:8px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
-    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    :root { --fg:#111; --muted:#666; --accent:#1a73e8; --danger:#c62828; --bg:#fff; }
+    html,body { margin:0; padding:0; background:#fff; color:var(--fg); font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+    .wrap { max-width:960px; margin:32px auto; padding:0 20px; }
+    h1 { font-size:32px; margin:0 0 12px; }
+    p.lead { margin:0 0 24px; color:var(--muted); }
+    .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    button {
+      appearance:none; border:0; border-radius:8px; padding:10px 14px;
+      background:var(--accent); color:#fff; font-weight:600; cursor:pointer;
+    }
+    button[disabled]{ opacity:.6; cursor:not-allowed; }
+    #switchMainnet{ background:#444; }
+    #networkWarning{ color:var(--danger); display:none; }
+    #status { color:var(--muted); min-height:1.2em; }
+    #viewer { margin-top:24px; height:82vh; border:1px solid #eee; border-radius:8px; overflow:hidden; display:none; }
+    #viewer iframe { width:100%; height:100%; border:0; background:#fff; }
+    .terms { margin-top:12px; font-size:13px; color:var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   </style>
 </head>
 <body>
-  <h1>Private Documents</h1>
-  <p>Access is restricted to <b>BACON NFT</b> holders. Signing is free (no gas).</p>
+  <div class="wrap">
+    <h1>Private Documents</h1>
+    <p class="lead">
+      Access is restricted to <strong>BACON NFT</strong> holders. Signing is free (no gas).
+    </p>
 
-  <button id="connect" class="btn">Connect Wallet</button>
-  <span id="msg"></span>
+    <div class="row">
+      <button id="connectBtn" type="button">Connect Wallet</button>
+      <button id="switchMainnet" type="button" style="display:none;">Switch to Ethereum Mainnet</button>
+      <span id="networkWarning">Wrong network. Please switch your wallet to Ethereum Mainnet.</span>
+    </div>
 
-  <script type="module">
-    const BTN  = document.getElementById('connect');
-    const MSG  = document.getElementById('msg');
+    <div id="status" class="mono" aria-live="polite"></div>
 
-    // Адрес serverless-функции — фиксированный путь на Netlify
-    const FN_URL = '/.netlify/functions/view';
+    <div id="viewer">
+      <iframe id="docFrame" title="BACON Private PDF" sandbox="allow-scripts allow-same-origin"></iframe>
+    </div>
 
-    function show(text, isError=true){
-      MSG.textContent = text || '';
-      MSG.style.color = isError ? '#d22' : '#0a0';
+    <div class="terms">
+      EN: PDF is rendered in a viewer without download/print controls, but CIDs on IPFS are public by design.
+      Access implies acceptance of terms; access may be logged (wallet & block number).<br/>
+      RU: PDF отображается в просмотрщике без кнопок скачивания/печати, но IPFS по своей природе публичен.
+      Доступ означает согласие с условиями; вход может логироваться (кошелёк и номер блока).
+    </div>
+  </div>
+
+  <script>
+    // ------- Helper: provider selection & chainId normalization -------
+    const $ = (id) => document.getElementById(id);
+
+    const getProvider = () => {
+      const eth = window.ethereum;
+      if (!eth) return null;
+      if (eth.providers?.length) {
+        // Если несколько кошельков — берём MetaMask
+        const mm = eth.providers.find(p => p.isMetaMask);
+        return mm || eth.providers[0];
+      }
+      return eth;
+    };
+
+    const normalizeChainId = (id) =>
+      (typeof id === 'string' && id.startsWith('0x')) ? parseInt(id, 16) : Number(id);
+
+    // ------- Network UI (fixed) -------
+    const provider = getProvider();
+
+    async function isMainnet() {
+      if (!provider) return false;
+      const id = await provider.request({ method: 'eth_chainId' });
+      return normalizeChainId(id) === 1; // 1 = Ethereum Mainnet
     }
 
-    function wait(on=true){
-      BTN.disabled = on;
-      BTN.textContent = on ? 'Waiting for wallet…' : 'Connect Wallet';
-    }
-
-    async function connect() {
+    async function updateNetworkUI() {
       try {
-        if (!window.ethereum) {
-          show('No wallet found. Please install MetaMask or a compatible wallet.');
-          return;
-        }
-
-        wait(true); show('');
-
-        // 1) Запрашиваем аккаунт
-        const [address] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-
-        // (опционально) Проверяем сеть — mainnet (0x1)
-        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-        if (chainId !== '0x1') {
-          show('Wrong network. Please switch your wallet to Ethereum Mainnet.');
-          wait(false);
-          return;
-        }
-
-        // (опционально) Подпись без газа — просто антибот
-        const message = `Sign to verify holder access for BACON docs. Nonce: ${Date.now()}`;
-        await window.ethereum.request({
-          method: 'personal_sign',
-          params: [message, address]
-        });
-
-        // 2) Обращаемся к функции-гейту
-        //    ВАЖНО: URL должен быть строкой — здесь он жёстко задан в FN_URL.
-        const res = await fetch(FN_URL, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ address })
-        });
-
-        if (!res.ok) {
-          // Попробуем прочитать текст ошибки
-          let err = '';
-          try { const j = await res.json(); err = j?.error || ''; } catch {}
-          show(err || `Access denied (${res.status})`);
-          wait(false);
-          return;
-        }
-
-        const data = await res.json();
-        if (!data?.url) {
-          show('Unexpected server response: no URL.');
-          wait(false);
-          return;
-        }
-
-        // 3) Пускаем внутрь
-        show('Access granted. Opening…', false);
-        window.location.href = data.url;
-
+        const onMain = await isMainnet();
+        $('networkWarning').style.display = onMain ? 'none' : 'inline';
+        $('switchMainnet').style.display  = onMain ? 'none' : 'inline-block';
+        return onMain;
       } catch (e) {
-        console.error(e);
-        show(e?.message || 'Something went wrong.');
-        wait(false);
+        console.error('Network check failed:', e);
+        $('networkWarning').style.display = 'inline';
+        return false;
       }
     }
 
-    BTN.addEventListener('click', connect);
+    $('switchMainnet').addEventListener('click', async () => {
+      if (!provider) return;
+      try {
+        await provider.request({ method:'wallet_switchEthereumChain', params:[{ chainId:'0x1' }] });
+      } catch (e) {
+        if (e.code === 4902) {
+          await provider.request({
+            method:'wallet_addEthereumChain',
+            params:[{
+              chainId:'0x1',
+              chainName:'Ethereum Mainnet',
+              nativeCurrency:{ name:'Ether', symbol:'ETH', decimals:18 },
+              rpcUrls:['https://cloudflare-eth.com'],
+              blockExplorerUrls:['https://etherscan.io']
+            }]
+          });
+        } else {
+          console.error('wallet_switchEthereumChain error:', e);
+        }
+      }
+    });
+
+    if (provider?.on) {
+      provider.on('chainChanged', () => { updateNetworkUI(); location.reload(); });
+      provider.on('accountsChanged', () => { /* можно сбрасывать сессию */ });
+    }
+
+    // ------- SIWE-lite + gated fetch -------
+    const API_VIEW = '/view'; // твой роут Netlify Functions v2
+
+    const setStatus = (t) => $('status').textContent = t ?? '';
+
+    async function connectAndView() {
+      if (!provider) {
+        setStatus('MetaMask is not detected. Please install it.');
+        window.open('https://metamask.io', '_blank');
+        return;
+      }
+
+      setStatus('Checking network…');
+      const onMain = await updateNetworkUI();
+      if (!onMain) {
+        setStatus('Wrong network. Switch to Ethereum Mainnet.');
+        return;
+      }
+
+      setStatus('Requesting account…');
+      const accounts = await provider.request({ method:'eth_requestAccounts' });
+      const address = (accounts?.[0] || '').toLowerCase();
+      if (!address) { setStatus('No account connected.'); return; }
+
+      // Попытка получить доступ без подписи (вдруг есть активная сессия)
+      try {
+        const url = await getDocUrl(address, null, null, true);
+        if (url) { showDoc(url); return; }
+      } catch (_) {}
+
+      // Если нужно — делаем простой SIWE-подобный флоу
+      setStatus('Preparing message to sign…');
+      const nonce = await fetch(`${API_VIEW}?nonce=1`, { method:'GET' })
+        .then(r => r.ok ? r.json() : { nonce: Math.random().toString(36).slice(2) })
+        .then(j => j.nonce ?? Math.random().toString(36).slice(2));
+
+      const chainHex = await provider.request({ method:'eth_chainId' });
+      const msg =
+`BACON Private Docs Access
+Domain: ${location.host}
+Address: ${address}
+ChainId: ${normalizeChainId(chainHex)}
+URI: ${location.origin}
+Nonce: ${nonce}
+Issued At: ${new Date().toISOString()}`;
+
+      setStatus('Please sign the message in MetaMask… (no gas)');
+      const signature = await provider.request({
+        method: 'personal_sign',
+        params: [ msg, address ],
+      });
+
+      setStatus('Verifying ownership…');
+      const url = await getDocUrl(address, msg, signature, false);
+      if (!url) throw new Error('No document URL returned');
+
+      showDoc(url);
+    }
+
+    async function getDocUrl(address, message, signature, tryGetOnly) {
+      const headers = { 'Content-Type': 'application/json' };
+      const body = message && signature ? JSON.stringify({ address, message, signature }) : null;
+
+      const resp = await fetch(API_VIEW + (tryGetOnly ? '' : ''), {
+        method: body ? 'POST' : 'GET',
+        headers,
+        ...(body ? { body } : {})
+      });
+
+      if (resp.status === 401 || resp.status === 403) {
+        if (tryGetOnly) return null; // нужно подписывать
+        throw new Error('Unauthorized');
+      }
+      if (!resp.ok) {
+        const txt = await resp.text().catch(()=>String(resp.status));
+        throw new Error('Server error: ' + txt);
+      }
+
+      // Поддержка нескольких возможных полей
+      const data = await resp.json().catch(()=> ({}));
+      const url = data.url || data.href || data.ipfs ||
+                  (data.path ? ('https://gateway.pinata.cloud/ipfs/' + data.path) : null);
+      return url;
+    }
+
+    function showDoc(url) {
+      setStatus('');
+      $('docFrame').src = url;      // URL PDF (IPFS gateway и т.п.)
+      $('viewer').style.display = 'block';
+    }
+
+    $('connectBtn').addEventListener('click', () => {
+      connectAndView().catch(err => {
+        console.error(err);
+        setStatus('Error: ' + (err?.message || err));
+      });
+    });
+
+    // Первичная инициализация
+    updateNetworkUI();
   </script>
 </body>
 </html>
