@@ -1,76 +1,81 @@
-// netlify/functions/view.js
-const ABI_BALANCE_OF = '0x70a08231'; // keccak256("balanceOf(address)") first 4 bytes
+// netlify/functions/view.mjs — Functions v2 (return Web Fetch API Response)
+import { ethers } from "ethers";
 
-export default async function handler(req) {
-  try {
-    if (req.method !== 'POST') {
-      return json({ error: 'Method Not Allowed' }, 405);
-    }
-
-    const { address } = await req.json().catch(() => ({}));
-    if (!address || typeof address !== 'string') {
-      return json({ error: 'Bad request: address is required' }, 400);
-    }
-
-    const RPC_URL      = process.env.RPC_URL;
-    const NFT_CONTRACT = (process.env.NFT_CONTRACT || '').toLowerCase();
-    const DOCS_CID     = process.env.DOCS_CID;
-    const GATEWAY      = process.env.GATEWAY_URL || 'https://cloudflare-ipfs.com/ipfs';
-
-    if (!RPC_URL || !NFT_CONTRACT || !DOCS_CID) {
-      return json({ error: 'Server is not configured (missing env vars).' }, 500);
-    }
-
-    // --- Проверка владения ERC-721 через balanceOf(address) ---
-    const addrNoPrefix = address.replace(/^0x/i, '').padStart(64, '0');
-    const data = ABI_BALANCE_OF + addrNoPrefix;
-
-    const rpcBody = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [
-        { to: NFT_CONTRACT, data },
-        'latest'
-      ]
-    };
-
-    const r = await fetch(RPC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(rpcBody)
-    });
-
-    if (!r.ok) {
-      const t = await r.text();
-      return json({ error: `RPC error: ${t.slice(0, 160)}` }, 502);
-    }
-
-    const payload = await r.json();
-    const hex = payload?.result;
-    if (!hex || !hex.startsWith('0x')) {
-      return json({ error: 'Invalid RPC response' }, 502);
-    }
-
-    // Преобразуем hex в BigInt и проверим, что баланс > 0
-    const balance = BigInt(hex);
-    if (balance <= 0n) {
-      return json({ error: 'Access denied: no BACON NFT found on this address.' }, 403);
-    }
-
-    // OK — формируем ссылку на документы
-    const url = `${GATEWAY}/${DOCS_CID}`;
-    return json({ url }, 200);
-
-  } catch (e) {
-    return json({ error: e?.message || 'Unexpected error' }, 500);
-  }
-}
-
-// Утилита для корректного JSON-ответа в Functions v2
+// helper for JSON responses
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
+    headers: { "content-type": "application/json" },
   });
+}
+
+export default async function handler(req, ctx) {
+  try {
+    const { RPC_URL, NFT_CONTRACT, DOCS_CID, GATEWAY_URL } = process.env;
+
+    if (!RPC_URL || !NFT_CONTRACT || !DOCS_CID) {
+      return json(
+        { error: "Missing env vars: RPC_URL, NFT_CONTRACT, DOCS_CID" },
+        500
+      );
+    }
+
+    const url = new URL(req.url);
+
+    // Health / nonce endpoint
+    if (req.method === "GET") {
+      if (url.searchParams.get("nonce")) {
+        const nonce =
+          (globalThis.crypto?.randomUUID?.() ??
+            Math.random().toString(36).slice(2)) + "";
+        return json({ nonce });
+      }
+      // Optional health probe
+      return json({ ok: true });
+    }
+
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
+
+    // Expecting: { address, message, signature }
+    let payload;
+    try {
+      payload = await req.json();
+    } catch {
+      return json({ error: "Bad JSON" }, 400);
+    }
+    const { address, message, signature } = payload || {};
+    if (!address || !message || !signature) {
+      return json({ error: "Missing address/message/signature" }, 400);
+    }
+
+    // Verify EIP-191 personal_sign message
+    const recovered = ethers.verifyMessage(message, signature).toLowerCase();
+    if (recovered !== address.toLowerCase()) {
+      return json({ error: "Invalid signature" }, 401);
+    }
+
+    // Check NFT ownership on Ethereum mainnet
+    const provider = new ethers.JsonRpcProvider(RPC_URL);
+    const abi = ["function balanceOf(address owner) view returns (uint256)"];
+    const contract = new ethers.Contract(NFT_CONTRACT, abi, provider);
+    const bal = await contract.balanceOf(address);
+    if (bal === 0n) {
+      return json({ error: "No eligible token" }, 403);
+    }
+
+    // Build document URL
+    const gateway = GATEWAY_URL || "https://gateway.pinata.cloud/ipfs";
+    // CHANGE FILE NAME HERE if needed:
+    const filePath = "index.pdf"; // e.g. "report.pdf" or "docs/index.pdf"
+    const docUrl = `${gateway}/${DOCS_CID}/${filePath}`;
+
+    return json({ url: docUrl });
+  } catch (e) {
+    return new Response(
+      "Internal Error: " + (e?.message || String(e)),
+      { status: 500, headers: { "content-type": "text/plain" } }
+    );
+  }
 }
