@@ -2,10 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>BACON — Private Documents</title>
   <style>
     :root { --fg:#111; --muted:#666; --accent:#1a73e8; --danger:#c62828; --bg:#fff; }
@@ -21,7 +18,7 @@
     button[disabled]{ opacity:.6; cursor:not-allowed; }
     #switchMainnet{ background:#444; }
     #networkWarning{ color:var(--danger); display:none; }
-    #status { color:var(--muted); min-height:1.2em; }
+    #status { color:var(--muted); min-height:1.2em; white-space:pre-wrap; }
     #viewer { margin-top:24px; height:82vh; border:1px solid #eee; border-radius:8px; overflow:hidden; display:none; }
     #viewer iframe { width:100%; height:100%; border:0; background:#fff; }
     .terms { margin-top:12px; font-size:13px; color:var(--muted); }
@@ -54,7 +51,11 @@
   </div>
 
   <script>
-    // ------- Provider selection & chainId normalization -------
+    // ---------- Config ----------
+    // Call the function directly via Netlify path:
+    const API_VIEW = "/.netlify/functions/view";
+
+    // ---------- Helpers ----------
     const $ = (id) => document.getElementById(id);
 
     const getProvider = () => {
@@ -70,92 +71,85 @@
     const normalizeChainId = (id) =>
       (typeof id === 'string' && id.startsWith('0x')) ? parseInt(id, 16) : Number(id);
 
-    // ------- Network UI (fixed) -------
     const provider = getProvider();
 
     async function isMainnet() {
       if (!provider) return false;
-      const id = await provider.request({ method: 'eth_chainId' });
-      return normalizeChainId(id) === 1; // 1 = Ethereum Mainnet
+      const id = await provider.request({ method: "eth_chainId" });
+      return normalizeChainId(id) === 1;
     }
 
     async function updateNetworkUI() {
       try {
         const onMain = await isMainnet();
-        $('networkWarning').style.display = onMain ? 'none' : 'inline';
-        $('switchMainnet').style.display  = onMain ? 'none' : 'inline-block';
+        $("networkWarning").style.display = onMain ? "none" : "inline";
+        $("switchMainnet").style.display  = onMain ? "none" : "inline-block";
         return onMain;
       } catch (e) {
-        console.error('Network check failed:', e);
-        $('networkWarning').style.display = 'inline';
+        console.error("Network check failed:", e);
+        $("networkWarning").style.display = "inline";
         return false;
       }
     }
 
-    $('switchMainnet').addEventListener('click', async () => {
+    $("switchMainnet").addEventListener("click", async () => {
       if (!provider) return;
       try {
-        await provider.request({ method:'wallet_switchEthereumChain', params:[{ chainId:'0x1' }] });
+        await provider.request({ method:"wallet_switchEthereumChain", params:[{ chainId:"0x1" }] });
       } catch (e) {
         if (e.code === 4902) {
           await provider.request({
-            method:'wallet_addEthereumChain',
+            method:"wallet_addEthereumChain",
             params:[{
-              chainId:'0x1',
-              chainName:'Ethereum Mainnet',
-              nativeCurrency:{ name:'Ether', symbol:'ETH', decimals:18 },
-              rpcUrls:['https://cloudflare-eth.com'],
-              blockExplorerUrls:['https://etherscan.io']
+              chainId:"0x1",
+              chainName:"Ethereum Mainnet",
+              nativeCurrency:{ name:"Ether", symbol:"ETH", decimals:18 },
+              rpcUrls:["https://cloudflare-eth.com"],
+              blockExplorerUrls:["https://etherscan.io"]
             }]
           });
         } else {
-          console.error('wallet_switchEthereumChain error:', e);
+          console.error("wallet_switchEthereumChain error:", e);
         }
       }
     });
 
     if (provider?.on) {
-      provider.on('chainChanged', () => { updateNetworkUI(); location.reload(); });
-      provider.on('accountsChanged', () => { /* optional: reset session */ });
+      provider.on("chainChanged", () => { updateNetworkUI(); location.reload(); });
+      provider.on("accountsChanged", () => { /* optional session reset */ });
     }
 
-    // ------- SIWE-lite + gated fetch -------
-    const API_VIEW = '/view'; // Netlify Functions v2 route
-
-    const setStatus = (t) => $('status').textContent = t ?? '';
+    const setStatus = (t) => $("status").textContent = t ?? "";
 
     async function connectAndView() {
       if (!provider) {
-        setStatus('MetaMask is not detected. Please install it.');
-        window.open('https://metamask.io', '_blank');
+        setStatus("MetaMask is not detected. Please install it.");
+        window.open("https://metamask.io", "_blank");
         return;
       }
 
-      setStatus('Checking network…');
+      setStatus("Checking network…");
       const onMain = await updateNetworkUI();
-      if (!onMain) {
-        setStatus('Wrong network. Switch to Ethereum Mainnet.');
-        return;
-      }
+      if (!onMain) { setStatus("Wrong network. Switch to Ethereum Mainnet."); return; }
 
-      setStatus('Requesting account…');
-      const accounts = await provider.request({ method:'eth_requestAccounts' });
-      const address = (accounts?.[0] || '').toLowerCase();
-      if (!address) { setStatus('No account connected.'); return; }
+      setStatus("Requesting account…");
+      const accounts = await provider.request({ method:"eth_requestAccounts" });
+      const address = (accounts?.[0] || "").toLowerCase();
+      if (!address) { setStatus("No account connected."); return; }
 
-      // Try to fetch without signature (if session already valid)
+      // Try without signature (existing session)
       try {
         const url = await getDocUrl(address, null, null, true);
         if (url) { showDoc(url); return; }
-      } catch (_) { /* ignore */ }
+      } catch (_) {}
 
-      // Simple SIWE-like flow (gasless)
-      setStatus('Preparing message to sign…');
-      const nonce = await fetch(`${API_VIEW}?nonce=1`, { method:'GET' })
+      // SIWE-lite (gasless)
+      setStatus("Preparing message to sign…");
+      const nonce = await fetch(`${API_VIEW}?nonce=1`, { method:"GET" })
         .then(r => r.ok ? r.json() : { nonce: Math.random().toString(36).slice(2) })
         .then(j => j.nonce ?? Math.random().toString(36).slice(2));
 
-      const chainHex = await provider.request({ method:'eth_chainId' });
+      const chainHex = await provider.request({ method:"eth_chainId" });
       const msg =
 `BACON Private Docs Access
 Domain: ${location.host}
@@ -165,59 +159,55 @@ URI: ${location.origin}
 Nonce: ${nonce}
 Issued At: ${new Date().toISOString()}`;
 
-      setStatus('Please sign the message in MetaMask… (no gas)');
-      const signature = await provider.request({
-        method: 'personal_sign',
-        params: [ msg, address ],
-      });
+      setStatus("Please sign the message in MetaMask… (no gas)");
+      const signature = await provider.request({ method:"personal_sign", params:[msg, address] });
 
-      setStatus('Verifying ownership…');
+      setStatus("Verifying ownership…");
       const url = await getDocUrl(address, msg, signature, false);
-      if (!url) throw new Error('No document URL returned');
+      if (!url) throw new Error("No document URL returned");
 
       showDoc(url);
     }
 
     async function getDocUrl(address, message, signature, tryGetOnly) {
-      const headers = { 'Content-Type': 'application/json' };
+      const headers = { "Content-Type": "application/json" };
       const body = message && signature ? JSON.stringify({ address, message, signature }) : null;
 
       const resp = await fetch(API_VIEW, {
-        method: body ? 'POST' : 'GET',
+        method: body ? "POST" : "GET",
         headers,
         ...(body ? { body } : {})
       });
 
       if (resp.status === 401 || resp.status === 403) {
-        if (tryGetOnly) return null; // requires signature
-        throw new Error('Unauthorized');
+        if (tryGetOnly) return null;
+        const txt = await resp.text().catch(()=> "");
+        throw new Error(`Unauthorized (${resp.status}): ${txt}`);
       }
       if (!resp.ok) {
-        const txt = await resp.text().catch(()=>String(resp.status));
-        throw new Error('Server error: ' + txt);
+        const txt = await resp.text().catch(()=> "");
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${txt}`);
       }
 
-      // Support several field names
       const data = await resp.json().catch(()=> ({}));
       const url = data.url || data.href || data.ipfs ||
-                  (data.path ? ('https://gateway.pinata.cloud/ipfs/' + data.path) : null);
+                  (data.path ? ("https://gateway.pinata.cloud/ipfs/" + data.path) : null);
       return url;
     }
 
     function showDoc(url) {
-      setStatus('');
-      $('docFrame').src = url;      // PDF URL (e.g., IPFS gateway)
-      $('viewer').style.display = 'block';
+      setStatus("");
+      $("docFrame").src = url;
+      $("viewer").style.display = "block";
     }
 
-    $('connectBtn').addEventListener('click', () => {
+    $("connectBtn").addEventListener("click", () => {
       connectAndView().catch(err => {
         console.error(err);
-        setStatus('Error: ' + (err?.message || err));
+        setStatus("Error: " + (err?.message || err));
       });
     });
 
-    // Initial UI update
     updateNetworkUI();
   </script>
 </body>
