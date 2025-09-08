@@ -1,20 +1,12 @@
-# Netlify configuration for bacon-docs
-
 [build]
-  # Папка, которая публикуется как сайт
-  publish = "public"
-  # Папка с серверными функциями (Netlify Functions)
+  publish   = "public"
   functions = "netlify/functions"
 
-# Проксируем вызовы API на Netlify Function /api/view → /.netlify/functions/view
-[[redirects]]
-  from = "/api/view"
-  to = "/.netlify/functions/view"
-  status = 200
+[functions]
+  node_bundler = "esbuild"
 
-# Редирект с корня сайта на /docs (чтобы главная сразу открывала нужную страницу)
+# Статическая страница /docs
 [[redirects]]
-  from = "/"
-  to = "/docs"
-  status = 301
-  force = true
+  from = "/docs"
+  to   = "/docs/index.html"
+  status = 200
