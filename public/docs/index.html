@@ -48,22 +48,19 @@
     </div>
 
     <div class="terms">
-      EN: PDF is rendered in a viewer without download/print controls, but CIDs on IPFS are public by design.
-      Access implies acceptance of terms; access may be logged (wallet & block number).<br/>
-      RU: PDF отображается в просмотрщике без кнопок скачивания/печати, но IPFS по своей природе публичен.
-      Доступ означает согласие с условиями; вход может логироваться (кошелёк и номер блока).
+      PDF is rendered in a viewer without download/print controls. IPFS CIDs are public by design.
+      By connecting, you accept the terms; access may be logged (wallet address & block number).
     </div>
   </div>
 
   <script>
-    // ------- Helper: provider selection & chainId normalization -------
+    // ------- Provider selection & chainId normalization -------
     const $ = (id) => document.getElementById(id);
 
     const getProvider = () => {
       const eth = window.ethereum;
       if (!eth) return null;
       if (eth.providers?.length) {
-        // Если несколько кошельков — берём MetaMask
         const mm = eth.providers.find(p => p.isMetaMask);
         return mm || eth.providers[0];
       }
@@ -119,11 +116,11 @@
 
     if (provider?.on) {
       provider.on('chainChanged', () => { updateNetworkUI(); location.reload(); });
-      provider.on('accountsChanged', () => { /* можно сбрасывать сессию */ });
+      provider.on('accountsChanged', () => { /* optional: reset session */ });
     }
 
     // ------- SIWE-lite + gated fetch -------
-    const API_VIEW = '/view'; // твой роут Netlify Functions v2
+    const API_VIEW = '/view'; // Netlify Functions v2 route
 
     const setStatus = (t) => $('status').textContent = t ?? '';
 
@@ -146,13 +143,13 @@
       const address = (accounts?.[0] || '').toLowerCase();
       if (!address) { setStatus('No account connected.'); return; }
 
-      // Попытка получить доступ без подписи (вдруг есть активная сессия)
+      // Try to fetch without signature (if session already valid)
       try {
         const url = await getDocUrl(address, null, null, true);
         if (url) { showDoc(url); return; }
-      } catch (_) {}
+      } catch (_) { /* ignore */ }
 
-      // Если нужно — делаем простой SIWE-подобный флоу
+      // Simple SIWE-like flow (gasless)
       setStatus('Preparing message to sign…');
       const nonce = await fetch(`${API_VIEW}?nonce=1`, { method:'GET' })
         .then(r => r.ok ? r.json() : { nonce: Math.random().toString(36).slice(2) })
@@ -185,14 +182,14 @@ Issued At: ${new Date().toISOString()}`;
       const headers = { 'Content-Type': 'application/json' };
       const body = message && signature ? JSON.stringify({ address, message, signature }) : null;
 
-      const resp = await fetch(API_VIEW + (tryGetOnly ? '' : ''), {
+      const resp = await fetch(API_VIEW, {
         method: body ? 'POST' : 'GET',
         headers,
         ...(body ? { body } : {})
       });
 
       if (resp.status === 401 || resp.status === 403) {
-        if (tryGetOnly) return null; // нужно подписывать
+        if (tryGetOnly) return null; // requires signature
         throw new Error('Unauthorized');
       }
       if (!resp.ok) {
@@ -200,7 +197,7 @@ Issued At: ${new Date().toISOString()}`;
         throw new Error('Server error: ' + txt);
       }
 
-      // Поддержка нескольких возможных полей
+      // Support several field names
       const data = await resp.json().catch(()=> ({}));
       const url = data.url || data.href || data.ipfs ||
                   (data.path ? ('https://gateway.pinata.cloud/ipfs/' + data.path) : null);
@@ -209,7 +206,7 @@ Issued At: ${new Date().toISOString()}`;
 
     function showDoc(url) {
       setStatus('');
-      $('docFrame').src = url;      // URL PDF (IPFS gateway и т.п.)
+      $('docFrame').src = url;      // PDF URL (e.g., IPFS gateway)
       $('viewer').style.display = 'block';
     }
 
@@ -220,7 +217,7 @@ Issued At: ${new Date().toISOString()}`;
       });
     });
 
-    // Первичная инициализация
+    // Initial UI update
     updateNetworkUI();
   </script>
 </body>
