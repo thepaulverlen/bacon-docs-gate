@@ -1,6 +1,9 @@
 {
   "name": "bacon-docs-gate",
   "private": true,
-  "type": "commonjs",
-  "dependencies": { "ethers": "^5.7.2" }
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "ethers": "^6.13.2"
+  }
 }
